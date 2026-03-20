@@ -5,7 +5,11 @@ from pathlib import Path
 from sys import argv, path
 import logging
 from yaml import safe_load, YAMLError
-
+import geopandas as gpd
+import pandas as pd
+import matplotlib.pyplot as plt
+import os
+import pyogrio
 
 # ============================================================================
 __author__ = "Julia Harvie, Morgan Crowley, Alan Cantin, Jacqueline Oliver"
@@ -149,22 +153,166 @@ def load_config(path):
                 f"Error parsing YAML file '{path}': {yaml_error}"
             ) from yaml_error
 
-def load_WFS(input_dir):
+def load_WFS(input_dir,epsg_code):
     '''
-    Load WFS geenrated files
+    Load WFS genrated files
+    Load in specific for case study with pre seprated named fires. Will need to modify directory structor of this for large scale unnamed runs 
     '''
     wfs_input_dir = Path(input_dir)/'WGC-G4-500-510'
     
-    
+    # dirs = []
+    # for path, subdirs, files in os.walk(wfs_input_dir):
+    #     for s in subdirs:
+    #         dirs.append(os.path.join(path, s))
+
+    # final_dir = Path(dirs[-1])
+
+    # files = []
+    # glob_func = wfs_input_dir.rglob 
+    # files.extend(glob_func(f'*_poly_perims.shp'))
+    # print(files)
+     
+    dirs = [
+    os.path.join(wfs_input_dir, d)
+    for d in os.listdir(wfs_input_dir)
+    if os.path.isdir(os.path.join(wfs_input_dir, d))
+    ]
+    gdfs = []
+    for dir in dirs:
+        print(dir)
+        sub_dirs = []
+        for path, subdirs, files in os.walk(dir):
+            for s in subdirs:
+                sub_dirs.append(os.path.join(path, s))
+        final_dir = Path(sub_dirs[-1])
+        print(final_dir)
+        files = []
+        glob_func = final_dir.rglob 
+        files.extend(glob_func(f'*_poly_perims.shp'))
+        subdir_name = Path(dir).name
+        gdf = gpd.read_file(files[-1], engine="pyogrio")
+        gdf["name"] = subdir_name
+        gdfs.append(gdf)
+
+
+    combined_gdf = gpd.GeoDataFrame(
+        pd.concat(gdfs, ignore_index=True),
+        crs=epsg_code)
+
+    # combined_gdf = gpd.read_file(files[-1], engine="pyogrio").to_crs(epsg_code)
+    # subdir_name = str(files[-1]).split('\\')[4]
+    # combined_gdf["name"] = subdir_name
+    combined_gdf['geometry'] = combined_gdf['geometry'].make_valid()
+    combined_gdf["area"] = combined_gdf.geometry.area
+    # # filter so only the largest of the dat
+    return combined_gdf
+
+def load_NFDB(input_dir,epsg_code):
+    '''
+    Load NFDB genrated files
+    '''
+    nfdb_input_dir = Path(input_dir)/'NFDB'
     files = []
-    glob_func = wfs_input_dir.rglob 
+    glob_func = nfdb_input_dir.rglob 
     files.extend(glob_func(f'*.shp'))
-    data_frames = []
-    for file_path in files:
-        print(file_path)
-            # curr_df = self._load_file(file_path)
-            # if curr_df is not None:
-            #     data_frames.append(curr_df)
+    gdf = gpd.read_file(files[0], engine="pyogrio").to_crs(epsg_code)
+    gdf['geometry'] = gdf['geometry'].make_valid()
+    return gdf
+
+def load_NBAC(input_dir,epsg_code):
+    '''
+    Load NFDB genrated files
+    '''
+    nfdb_input_dir = Path(input_dir)/'NBAC'
+    files = []
+    glob_func = nfdb_input_dir.rglob 
+    files.extend(glob_func(f'*.shp'))
+    gdf = gpd.read_file(files[0], engine="pyogrio").to_crs(epsg_code)
+    gdf['geometry'] = gdf['geometry'].make_valid()
+    return gdf
+
+def subset_NFBD_NBAC(wfs_df, nbac_df, nfdb_df):
+    target_fires = wfs_df["name"].unique()
+    years = []
+    for fire in target_fires:
+        # final_row = wfs_df[wfs_df["name"] == fire].tail(1)
+        final_row = wfs_df[wfs_df["name"] == fire].iloc[-1]
+        year = str(final_row['update_dt']).split("-")[0]
+        years.append(float(year))
+    print('years')
+    print(years)
+    wfs_df['geometry'] = wfs_df['geometry'].make_valid()
+    geom_union = wfs_df.union_all()
+    nbac_df_filtered = nbac_df[nbac_df["YEAR"].isin(years)][nbac_df[nbac_df["YEAR"].isin(years)].intersects(geom_union)]   
+    nfdb_df_filtered = nfdb_df[nfdb_df["YEAR"].isin(years)][nfdb_df[nfdb_df["YEAR"].isin(years)].intersects(geom_union)]   
+
+    return nbac_df_filtered, nfdb_df_filtered
+    # return nbac_df_filtered 
+    
+
+def dice_coefficient(geom1, geom2):
+    """
+    Computes the Dice coefficient between two Shapely geometries.
+    """
+    # Area of intersection
+    inter = geom1.intersection(geom2).area
+
+    # Areas of individual geometries
+    a1 = geom1.area
+    a2 = geom2.area
+
+    # Avoid division by zero
+    if a1 + a2 == 0:
+        return 0.0
+    
+    return (2 * inter) / (a1 + a2)
+
+def compare_perimeters(wfs_df, nbac_df, nfdb_df, epsg_code):
+    target_fires = wfs_df["name"].unique()
+    result_gdfs = []
+    for fire_name in target_fires:
+        print(fire_name)
+        for i, row_wfs in wfs_df[wfs_df["name"] == fire_name].iterrows():
+            for j, row_nbac in nbac_df.iterrows():
+                if row_wfs.geometry.intersects(row_nbac.geometry):
+                    dice_value = dice_coefficient(row_wfs.geometry, row_nbac.geometry)
+                    result_df = pd.DataFrame({
+                    "nfireidname": row_nbac["NFIREID"],
+                    "fire name": row_wfs["name"],
+                    "event": row_wfs["event_id"],
+                    "dice_coefficient": [dice_value]
+                    })
+                    print(row_wfs['name'])
+                    print(row_wfs)
+                    result_gdfs.append(result_df)
+            for k, row_nfdb in nfdb_df.iterrows():
+                if row_wfs.geometry.intersects(row_nfdb.geometry):
+                    dice_value = dice_coefficient(row_wfs.geometry, row_nfdb.geometry)
+                    result_df = pd.DataFrame({
+                    "agency label": row_nfdb["FIRE_ID"],
+                    "fire name": row_wfs["name"],
+                    "event": row_wfs["event_id"],
+                    "dice_coefficient": [dice_value]
+                    })
+                    result_gdfs.append(result_df)
+
+    combined_gdf = pd.concat(result_gdfs, ignore_index=True)
+    
+    return combined_gdf
+
+
+
+
+
+
+
+    
+
+
+
+    # combined_gdf = gpd.GeoDataFrame(pd.concat(gdfs, ignore_index=True), crs=gdfs[0].crs)
+    # print(combined_gdf.head())
+
 
 
 def main():
@@ -198,12 +346,23 @@ def main():
 
 
     #Import in T2 data
-    WFS_df = load_WFS(config.get("PATH_TO_INPUT_DIR"))
+    WFS_df_all = load_WFS(config.get("PATH_TO_INPUT_DIR"),config.get("EPSG_NUMBER"))
+    print(WFS_df_all)
+
     #Improt NBAC
-    #Import NFDB
-    #Apply case study filte (only fires that overlap)
+    NBAC_df_all = load_NBAC(config.get("PATH_TO_INPUT_DIR"),config.get("EPSG_NUMBER"))
+    # #Import NFDB
+    NFDB_df_all = load_NFDB(config.get("PATH_TO_INPUT_DIR"),config.get("EPSG_NUMBER"))
+    #Filter down to relavent fires 
+    nbac_df_filtered, nfdb_df_filtered = subset_NFBD_NBAC(WFS_df_all,NBAC_df_all,NFDB_df_all)
+    # nbac_df_filtered = subset_NFBD_NBAC(WFS_df_all,NBAC_df_all,None)
+    print(nfdb_df_filtered.tail())
+    print(nbac_df_filtered.tail())
     #Apply custome Dice Score 
-    None
+    results_df = compare_perimeters(WFS_df_all, nbac_df_filtered, nfdb_df_filtered, None)
+    print(results_df)
+    results_df.to_csv('dice_out.csv')
+    
 
 
 # =============================================================================
