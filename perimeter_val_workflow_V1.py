@@ -153,25 +153,12 @@ def load_config(path):
                 f"Error parsing YAML file '{path}': {yaml_error}"
             ) from yaml_error
 
-def load_WFS(input_dir,epsg_code):
+def load_WFS_named(input_dir,epsg_code):
     '''
     Load WFS genrated files
     Load in specific for case study with pre seprated named fires. Will need to modify directory structor of this for large scale unnamed runs 
     '''
     wfs_input_dir = Path(input_dir)/'WGC-G4-500-510'
-    
-    # dirs = []
-    # for path, subdirs, files in os.walk(wfs_input_dir):
-    #     for s in subdirs:
-    #         dirs.append(os.path.join(path, s))
-
-    # final_dir = Path(dirs[-1])
-
-    # files = []
-    # glob_func = wfs_input_dir.rglob 
-    # files.extend(glob_func(f'*_poly_perims.shp'))
-    # print(files)
-     
     dirs = [
     os.path.join(wfs_input_dir, d)
     for d in os.listdir(wfs_input_dir)
@@ -199,13 +186,27 @@ def load_WFS(input_dir,epsg_code):
         pd.concat(gdfs, ignore_index=True),
         crs=epsg_code)
 
-    # combined_gdf = gpd.read_file(files[-1], engine="pyogrio").to_crs(epsg_code)
-    # subdir_name = str(files[-1]).split('\\')[4]
-    # combined_gdf["name"] = subdir_name
     combined_gdf['geometry'] = combined_gdf['geometry'].make_valid()
     combined_gdf["area"] = combined_gdf.geometry.area
     # # filter so only the largest of the dat
     return combined_gdf
+
+def load_wfs_nonames(input_dir,epsg_code):
+    wfs_input_dir = input_dir
+    dirs = [
+    os.path.join(wfs_input_dir, d)
+    for d in os.listdir(wfs_input_dir)
+    if os.path.isdir(os.path.join(wfs_input_dir, d))
+    ]
+    final_dir = Path(dirs[-1])
+    print(final_dir)
+    files = []
+    glob_func = final_dir.rglob 
+    files.extend(glob_func(f'*_poly_perims.shp'))
+    gdf = gpd.read_file(files[-1], engine="pyogrio").to_crs(epsg_code)
+    gdf['geometry'] = gdf['geometry'].make_valid()
+
+    return gdf
 
 def load_NFDB(input_dir,epsg_code):
     '''
@@ -217,6 +218,7 @@ def load_NFDB(input_dir,epsg_code):
     files.extend(glob_func(f'*.shp'))
     gdf = gpd.read_file(files[0], engine="pyogrio").to_crs(epsg_code)
     gdf['geometry'] = gdf['geometry'].make_valid()
+    
     return gdf
 
 def load_NBAC(input_dir,epsg_code):
@@ -227,9 +229,18 @@ def load_NBAC(input_dir,epsg_code):
     files = []
     glob_func = nfdb_input_dir.rglob 
     files.extend(glob_func(f'*.shp'))
-    gdf = gpd.read_file(files[0], engine="pyogrio").to_crs(epsg_code)
-    gdf['geometry'] = gdf['geometry'].make_valid()
-    return gdf
+    gdfs = []
+    for file in files:
+        gdf = gpd.read_file(file, engine="pyogrio").to_crs(epsg_code)
+        gdfs.append(gdf)
+
+    combined_gdf = gpd.GeoDataFrame(
+        pd.concat(gdfs, ignore_index=True),
+        crs=epsg_code)
+    # combined_gdf['geometry'] = combined_gdf['geometry'].make_valid()
+    combined_gdf["area"] = combined_gdf.geometry.area
+    return combined_gdf
+
 
 def subset_NFBD_NBAC(wfs_df, nbac_df, nfdb_df):
     target_fires = wfs_df["name"].unique()
@@ -267,34 +278,85 @@ def dice_coefficient(geom1, geom2):
     
     return (2 * inter) / (a1 + a2)
 
-def compare_perimeters(wfs_df, nbac_df, nfdb_df, epsg_code):
+def compare_perimeters(wfs_df, nbac_df, nfdb_df):
     target_fires = wfs_df["name"].unique()
     result_gdfs = []
     for fire_name in target_fires:
         print(fire_name)
         for i, row_wfs in wfs_df[wfs_df["name"] == fire_name].iterrows():
+            wfs_year = float(str(row_wfs['update_dt']).split("-")[0])
             for j, row_nbac in nbac_df.iterrows():
-                if row_wfs.geometry.intersects(row_nbac.geometry):
+                if (row_wfs.geometry.intersects(row_nbac.geometry) and row_nbac["YEAR"] == wfs_year):
                     dice_value = dice_coefficient(row_wfs.geometry, row_nbac.geometry)
                     result_df = pd.DataFrame({
-                    "nfireidname": row_nbac["NFIREID"],
-                    "fire name": row_wfs["name"],
+                    "NBAC_nfireid": row_nbac["NFIREID"],
+                    "WFS_sandboxid": row_wfs["name"],
                     "event": row_wfs["event_id"],
+                    "area": row_wfs.geometry.area,
                     "dice_coefficient": [dice_value]
                     })
-                    print(row_wfs['name'])
-                    print(row_wfs)
                     result_gdfs.append(result_df)
             for k, row_nfdb in nfdb_df.iterrows():
-                if row_wfs.geometry.intersects(row_nfdb.geometry):
+                if (row_wfs.geometry.intersects(row_nfdb.geometry) and row_nfdb["YEAR"] == wfs_year):
                     dice_value = dice_coefficient(row_wfs.geometry, row_nfdb.geometry)
                     result_df = pd.DataFrame({
-                    "agency label": row_nfdb["FIRE_ID"],
-                    "fire name": row_wfs["name"],
+                    "NFDB_fireid": row_nfdb["FIRE_ID"],
+                    "WFS_sandboxid": row_wfs["name"],
                     "event": row_wfs["event_id"],
+                    "area": row_wfs.geometry.area,
                     "dice_coefficient": [dice_value]
                     })
                     result_gdfs.append(result_df)
+    for i, row_nbac in nbac_df.iterrows():
+        for j,row_nfdb in nfdb_df.iterrows():
+            if (row_nbac.geometry.intersects(row_nfdb.geometry) and row_nbac["YEAR"] == row_nfdb["YEAR"]):
+                dice_value = dice_coefficient(row_nbac.geometry, row_nfdb.geometry)
+                result_df = pd.DataFrame({
+                    "NBAC_nfireid": row_nbac["NFIREID"],
+                    "NFDB_fireid": row_nfdb["FIRE_ID"],
+                    "dice_coefficient": [dice_value]
+                    })
+                result_gdfs.append(result_df)
+
+    combined_gdf = pd.concat(result_gdfs, ignore_index=True)
+    
+    return combined_gdf
+
+def compare_perimeters_nonames(wfs_df, nbac_df, nfdb_df):
+    result_gdfs = []
+    for i, row_wfs in wfs_df.iterrows():
+        print("working on:")
+        print(row_wfs["event_id"])
+        for j, row_nbac in nbac_df.iterrows():
+            if row_wfs.geometry.intersects(row_nbac.geometry):
+                dice_value = dice_coefficient(row_wfs.geometry, row_nbac.geometry)
+                result_df = pd.DataFrame({
+                "NBAC_nfireid": row_nbac["NFIREID"],
+                "WFS event": row_wfs["event_id"],
+                "area": row_wfs.geometry.area,
+                "dice_coefficient": [dice_value]
+                })
+                result_gdfs.append(result_df)
+        # for k, row_nfdb in nfdb_df.iterrows():
+        #     if row_wfs.geometry.intersects(row_nfdb.geometry):
+        #         dice_value = dice_coefficient(row_wfs.geometry, row_nfdb.geometry)
+        #         result_df = pd.DataFrame({
+        #         "NFDB_fireid": row_nfdb["FIRE_ID"],
+        #         "WFS event": row_wfs["event_id"],
+        #         "area": row_wfs.geometry.area,
+        #         "dice_coefficient": [dice_value]
+        #         })
+        #         result_gdfs.append(result_df)
+    # for i, row_nbac in nbac_df.iterrows():
+    #     for j,row_nfdb in nfdb_df.iterrows():
+    #         if row_nbac.geometry.intersects(row_nfdb.geometry):
+    #             dice_value = dice_coefficient(row_nbac.geometry, row_nfdb.geometry)
+    #             result_df = pd.DataFrame({
+    #                 "NBAC_nfireid": row_nbac["NFIREID"],
+    #                 "NFDB_fireid": row_nfdb["FIRE_ID"],
+    #                 "dice_coefficient": [dice_value]
+    #                 })
+    #             result_gdfs.append(result_df)
 
     combined_gdf = pd.concat(result_gdfs, ignore_index=True)
     
@@ -302,8 +364,61 @@ def compare_perimeters(wfs_df, nbac_df, nfdb_df, epsg_code):
 
 
 
+def dice_area_plot(
+    df: pd.DataFrame,
+    area_col: str = "area",
+    dice_col: str = "dice_coefficient",
+    n_bins: int = 10
+):
+    # Work on a copy to avoid modifying caller's dataframe
+    data = df.copy()
 
+    # Create area bins
+    # data["area_bin"] = pd.cut(
+    #     data[area_col],
+    #     bins=n_bins,
+    #     precision=0
+    # )
+    data["area_bin"] = pd.qcut(data[area_col],
+                               q=n_bins,
+                               precision=0)
+    
 
+    grouped = data.groupby("area_bin")
+    print(grouped.groups)
+    bins = data["area_bin"].cat.categories
+    print(bins)
+    grouped_data = []
+    for bin in bins:
+        values = grouped.get_group(bin)["dice_coefficient"].values
+        grouped_data.append(values)
+
+    # Create box-and-whisker plot
+    plt.figure(figsize=(10, 6))
+    plt.boxplot(grouped_data, labels=[str(b) for b in bins], showfliers=True)
+
+    plt.xlabel("Area bins")
+    plt.ylabel("Dice coefficient")
+    plt.title("Dice Coefficient Distribution by Area Bins")
+
+    plt.xticks(rotation=45, ha="right")
+    plt.tight_layout()
+    plt.show()
+
+def dice_bar_plot(dataframe, xaxis, yaxis):
+    
+    dataframe.plot(
+        x=xaxis,
+        y=yaxis,
+        kind="bar",
+        legend=False,
+        figsize=(8, 5)
+    )
+
+    plt.xlabel(xaxis)
+    plt.ylabel(yaxis)
+    plt.tight_layout()
+    plt.show()
 
 
     
@@ -314,9 +429,7 @@ def compare_perimeters(wfs_df, nbac_df, nfdb_df, epsg_code):
     # print(combined_gdf.head())
 
 
-
-def main():
-
+def named_sandbox_compare():
     # Load config
     # ------------------------------------------------------------------------
     # Initialize config_path variable
@@ -346,23 +459,78 @@ def main():
 
 
     #Import in T2 data
-    WFS_df_all = load_WFS(config.get("PATH_TO_INPUT_DIR"),config.get("EPSG_NUMBER"))
-    print(WFS_df_all)
-
+    WFS_df_all = load_WFS_named(config.get("PATH_TO_INPUT_DIR"),config.get("EPSG_NUMBER"))
     #Improt NBAC
     NBAC_df_all = load_NBAC(config.get("PATH_TO_INPUT_DIR"),config.get("EPSG_NUMBER"))
+    print('NBAC loaded')
     # #Import NFDB
     NFDB_df_all = load_NFDB(config.get("PATH_TO_INPUT_DIR"),config.get("EPSG_NUMBER"))
+    print('NFDB loaded')
     #Filter down to relavent fires 
     nbac_df_filtered, nfdb_df_filtered = subset_NFBD_NBAC(WFS_df_all,NBAC_df_all,NFDB_df_all)
     # nbac_df_filtered = subset_NFBD_NBAC(WFS_df_all,NBAC_df_all,None)
-    print(nfdb_df_filtered.tail())
-    print(nbac_df_filtered.tail())
     #Apply custome Dice Score 
-    results_df = compare_perimeters(WFS_df_all, nbac_df_filtered, nfdb_df_filtered, None)
-    print(results_df)
-    results_df.to_csv('dice_out.csv')
-    
+    results_df = compare_perimeters(WFS_df_all, nbac_df_filtered, nfdb_df_filtered)
+    # results_df = compare_perimeters(WFS_df_all, nbac_df_filtered, None)
+    # results_df.to_csv('dice_out_03_27.csv')
+    filtered_df = results_df.loc[results_df.groupby("WFS_sandboxid")["area"].idxmax()]
+    print(filtered_df)
+    return filtered_df
+
+def subset_year_compare():
+        # Load config
+    # ------------------------------------------------------------------------
+    # Initialize config_path variable
+    # Determine if the provided argument is a valid YAML file (.yml or .yaml)
+    if len(argv) > 1 and Path(argv[1]).suffix in ['.yml', '.yaml']:
+        config_path = Path(argv[1])
+    # Use the default path if the second argument isn't a valid config file
+    else:
+        proj_dir = find_project_root("config")
+        config_path = proj_dir / "config" / "config_stub.yml" 
+    config = load_config(config_path)
+
+    # Initialization and Data Loading
+    # ------------------------------------------------------------------------
+    # Get core config values
+    EPSG_NUMBER = config.get("EPSG_NUMBER")
+    if not EPSG_NUMBER:
+        raise ValueError("EPSG_NUMBER is required in configuration")
+    if not isinstance(EPSG_NUMBER, int) or EPSG_NUMBER <= 0:
+        raise ValueError("EPSG_NUMBER must be a positive integer")
+
+    # Logging config - optional - if not set, will print to console
+    config_logging(config.get("PATH_TO_LOG_OUTPUT"),
+                   config.get("LOG_LEVEL"),
+                   config.get("LOG_TO_CONSOLE"))
+    config
+
+
+    #Import in T2 data
+    WFS_df_all = load_wfs_nonames(config.get("PATH_TO_SASK_INPUT_DIR"),config.get("EPSG_NUMBER"))
+    print("wfs_loaded")
+    #Improt NBAC
+    NBAC_df_all = load_NBAC(config.get("PATH_TO_INPUT_DIR"),config.get("EPSG_NUMBER"))
+    print('NBAC loaded')
+    #Import NFDB
+    # NFDB_df_all = load_NFDB(config.get("PATH_TO_INPUT_DIR"),config.get("EPSG_NUMBER"))
+    print('NFDB loaded')
+    # print(NFDB_df_all.info())
+    # Filter down by year and province
+    nbac_df_filtered = NBAC_df_all[(NBAC_df_all['YEAR'] == float(2023)) & (NBAC_df_all['ADMIN_AREA'] == 'SK')]
+    print(nbac_df_filtered)
+    # nfdb_df_filtered = NFDB_df_all[(NFDB_df_all['YEAR'] == 2023) & (NFDB_df_all['SRC_AGENCY'] == 'SK')]
+    # print(nfdb_df_filtered)
+    results_df = compare_perimeters_nonames(WFS_df_all, nbac_df_filtered, None)
+    # results_df.to_csv('figure_ref.csv')
+    return results_df
+
+def main():
+    results_df = subset_year_compare()
+    # dice_bar_plot(results_df, 'WFS_sandboxid', 'dice_coefficient')
+    dice_area_plot(results_df)
+
+
 
 
 # =============================================================================
