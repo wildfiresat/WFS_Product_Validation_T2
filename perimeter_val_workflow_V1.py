@@ -193,6 +193,11 @@ def load_WFS_named(input_dir,epsg_code):
 
 def load_wfs_nonames(input_dir,epsg_code):
     wfs_input_dir = input_dir
+    print(wfs_input_dir)
+    # dirs = []
+    # for d in os.listdir(wfs_input_dir):
+    #     if os.path.isdir(os.path.join(wfs_input_dir, d)):
+    #         dirs.append(os.path.join(wfs_input_dir, d))
     dirs = [
     os.path.join(wfs_input_dir, d)
     for d in os.listdir(wfs_input_dir)
@@ -233,11 +238,13 @@ def load_NBAC(input_dir,epsg_code):
     for file in files:
         gdf = gpd.read_file(file, engine="pyogrio").to_crs(epsg_code)
         gdfs.append(gdf)
-
-    combined_gdf = gpd.GeoDataFrame(
-        pd.concat(gdfs, ignore_index=True),
-        crs=epsg_code)
-    # combined_gdf['geometry'] = combined_gdf['geometry'].make_valid()
+    if len(gdfs) > 1:
+        combined_gdf = gpd.GeoDataFrame(
+            pd.concat(gdfs, ignore_index=True),
+            crs=epsg_code)
+    else:
+        combined_gdf = gdfs[0]
+    combined_gdf['geometry'] = combined_gdf['geometry'].make_valid()
     combined_gdf["area"] = combined_gdf.geometry.area
     return combined_gdf
 
@@ -277,6 +284,23 @@ def dice_coefficient(geom1, geom2):
         return 0.0
     
     return (2 * inter) / (a1 + a2)
+
+def relative_distance(geom1, geom2):
+    """
+    Calculate the relative percent difference 
+    """
+    a1 = geom1.area
+    a2 = geom2.area
+
+    # Avoid division by zero
+    if a1 + a2 == 0:
+        return 0.0
+    
+    num = abs(a1 - a2) 
+    denom = (a1 + a2)/2
+    p = num/denom
+    return p * 100 
+
 
 def compare_perimeters(wfs_df, nbac_df, nfdb_df):
     target_fires = wfs_df["name"].unique()
@@ -330,33 +354,44 @@ def compare_perimeters_nonames(wfs_df, nbac_df, nfdb_df):
         for j, row_nbac in nbac_df.iterrows():
             if row_wfs.geometry.intersects(row_nbac.geometry):
                 dice_value = dice_coefficient(row_wfs.geometry, row_nbac.geometry)
+                RPD_value = relative_distance(row_wfs.geometry, row_nbac.geometry)
                 result_df = pd.DataFrame({
                 "NBAC_nfireid": row_nbac["NFIREID"],
+                "NBAC_area": row_nbac.geometry.area,
                 "WFS event": row_wfs["event_id"],
-                "area": row_wfs.geometry.area,
-                "dice_coefficient": [dice_value]
+                "T2_area": row_wfs.geometry.area,
+                "dice_coefficient": [dice_value],
+                "Relative Percent Difference": [RPD_value]
                 })
                 result_gdfs.append(result_df)
-        # for k, row_nfdb in nfdb_df.iterrows():
-        #     if row_wfs.geometry.intersects(row_nfdb.geometry):
-        #         dice_value = dice_coefficient(row_wfs.geometry, row_nfdb.geometry)
-        #         result_df = pd.DataFrame({
-        #         "NFDB_fireid": row_nfdb["FIRE_ID"],
-        #         "WFS event": row_wfs["event_id"],
-        #         "area": row_wfs.geometry.area,
-        #         "dice_coefficient": [dice_value]
-        #         })
-        #         result_gdfs.append(result_df)
-    # for i, row_nbac in nbac_df.iterrows():
-    #     for j,row_nfdb in nfdb_df.iterrows():
-    #         if row_nbac.geometry.intersects(row_nfdb.geometry):
-    #             dice_value = dice_coefficient(row_nbac.geometry, row_nfdb.geometry)
-    #             result_df = pd.DataFrame({
-    #                 "NBAC_nfireid": row_nbac["NFIREID"],
-    #                 "NFDB_fireid": row_nfdb["FIRE_ID"],
-    #                 "dice_coefficient": [dice_value]
-    #                 })
-    #             result_gdfs.append(result_df)
+        for k, row_nfdb in nfdb_df.iterrows():
+            if row_wfs.geometry.intersects(row_nfdb.geometry):
+                dice_value = dice_coefficient(row_wfs.geometry, row_nfdb.geometry)
+                RPD_value = relative_distance(row_wfs.geometry, row_nfdb.geometry)
+                result_df = pd.DataFrame({
+                "NFDB_fireid": row_nfdb["FIRE_ID"],
+                "NFDB_area": row_nfdb.geometry.area,
+                "WFS event": row_wfs["event_id"],
+                "T2_area": row_wfs.geometry.area,
+                "dice_coefficient": [dice_value],
+                "Relative Percent Difference": [RPD_value]
+                })
+                result_gdfs.append(result_df)
+               
+    for i, row_nbac in nbac_df.iterrows():
+        for j,row_nfdb in nfdb_df.iterrows():
+            if row_nbac.geometry.intersects(row_nfdb.geometry):
+                dice_value = dice_coefficient(row_nbac.geometry, row_nfdb.geometry)
+                RPD_value = relative_distance(row_nbac.geometry, row_nfdb.geometry)
+                result_df = pd.DataFrame({
+                    "NBAC_nfireid": row_nbac["NFIREID"],
+                    "NBAC_area": row_nbac.geometry.area,
+                    "NFDB_fireid": row_nfdb["FIRE_ID"],
+                    "NFDB_area": row_nfdb.geometry.area,
+                    "dice_coefficient": [dice_value],
+                    "Relative Percent Difference": [RPD_value]
+                    })
+                result_gdfs.append(result_df)
 
     combined_gdf = pd.concat(result_gdfs, ignore_index=True)
     
@@ -421,10 +456,6 @@ def dice_bar_plot(dataframe, xaxis, yaxis):
     plt.show()
 
 
-    
-
-
-
     # combined_gdf = gpd.GeoDataFrame(pd.concat(gdfs, ignore_index=True), crs=gdfs[0].crs)
     # print(combined_gdf.head())
 
@@ -477,7 +508,7 @@ def named_sandbox_compare():
     print(filtered_df)
     return filtered_df
 
-def subset_year_compare():
+def subset_year_compare(agency_id,year):
         # Load config
     # ------------------------------------------------------------------------
     # Initialize config_path variable
@@ -489,6 +520,7 @@ def subset_year_compare():
         proj_dir = find_project_root("config")
         config_path = proj_dir / "config" / "config_stub.yml" 
     config = load_config(config_path)
+    print(config)
 
     # Initialization and Data Loading
     # ------------------------------------------------------------------------
@@ -504,31 +536,31 @@ def subset_year_compare():
                    config.get("LOG_LEVEL"),
                    config.get("LOG_TO_CONSOLE"))
     config
+    print(config.get("EPSG_NUMBER"))
 
-
+    print(config.get("PATH_TO_INPUT_DIR"))
     #Import in T2 data
-    WFS_df_all = load_wfs_nonames(config.get("PATH_TO_SASK_INPUT_DIR"),config.get("EPSG_NUMBER"))
+    WFS_df_all = load_wfs_nonames(config.get("PATH_TO_INPUT_DIR"),config.get("EPSG_NUMBER"))
     print("wfs_loaded")
     #Improt NBAC
     NBAC_df_all = load_NBAC(config.get("PATH_TO_INPUT_DIR"),config.get("EPSG_NUMBER"))
     print('NBAC loaded')
     #Import NFDB
-    # NFDB_df_all = load_NFDB(config.get("PATH_TO_INPUT_DIR"),config.get("EPSG_NUMBER"))
+    NFDB_df_all = load_NFDB(config.get("PATH_TO_INPUT_DIR"),config.get("EPSG_NUMBER"))
     print('NFDB loaded')
     # print(NFDB_df_all.info())
     # Filter down by year and province
-    nbac_df_filtered = NBAC_df_all[(NBAC_df_all['YEAR'] == float(2023)) & (NBAC_df_all['ADMIN_AREA'] == 'SK')]
-    print(nbac_df_filtered)
-    # nfdb_df_filtered = NFDB_df_all[(NFDB_df_all['YEAR'] == 2023) & (NFDB_df_all['SRC_AGENCY'] == 'SK')]
+    nbac_df_filtered = NBAC_df_all[(NBAC_df_all['YEAR'] == float(year)) & (NBAC_df_all['ADMIN_AREA'] == agency_id)]
+    nfdb_df_filtered = NFDB_df_all[(NFDB_df_all['YEAR'] == year) & (NFDB_df_all['SRC_AGENCY'] == agency_id)]
     # print(nfdb_df_filtered)
-    results_df = compare_perimeters_nonames(WFS_df_all, nbac_df_filtered, None)
-    # results_df.to_csv('figure_ref.csv')
+    results_df = compare_perimeters_nonames(WFS_df_all, nbac_df_filtered, nfdb_df_filtered)
+    results_df.to_csv('April10.csv')
     return results_df
 
 def main():
-    results_df = subset_year_compare()
+    results_df = subset_year_compare(agency_id = 'SK', year = 2023)
     # dice_bar_plot(results_df, 'WFS_sandboxid', 'dice_coefficient')
-    dice_area_plot(results_df)
+    # dice_area_plot(results_df)
 
 
 

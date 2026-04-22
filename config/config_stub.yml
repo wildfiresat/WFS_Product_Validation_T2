@@ -1,5 +1,4 @@
-PATH_TO_INPUT_DIR: 'D:\JHarvie\perimeter_validation_inputs'
-PATH_TO_SASK_INPUT_DIR: 'C:\Users\jharvie\Documents\WGC_G4_500_outputs\code_dev\Sask_2023_full'
+PATH_TO_INPUT_DIR: 'C:\Users\jharvie\Documents\WFS_Science_Studies\Perim_val_staging\perimeter_validation_inputs'
 PATH_TO_OUTPUT_DIR: 'C:\Users\jharvie\Documents\WFS_Science_Studies\Run_time\July_Mountain_FIRMS'
 PATH_TO_LOG_OUTPUT: 'C:\Users\jharvie\Documents\WFS_Science_Studies\Run_time\July_Mountain_FIRMS\output.log' # Optional - if not supplied, will output to console
 LOG_LEVEL: "DEBUG" # Optional 
